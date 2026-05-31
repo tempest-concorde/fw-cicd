@@ -14,7 +14,7 @@ Located in `.github/workflows/`:
 
 - **build-container.yml** - Per-architecture container build with Trivy scanning and GHCR push
 - **merge-manifest.yml** - Multi-arch manifest creation and cosign signing
-- **slsa-provenance.yml** - SBOM generation (CycloneDX) and SLSA build provenance attestation
+- **sbom-attest.yml** - SBOM generation (CycloneDX) and cosign attestation
 - **semantic-release.yml** - Conventional commits → semantic versioning
 
 ### Composite Actions
@@ -67,13 +67,30 @@ jobs:
     secrets:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  provenance:
+  sbom:
     needs: merge-manifest
-    uses: tempest-concorde/fw-cicd/.github/workflows/slsa-provenance.yml@main
+    uses: tempest-concorde/fw-cicd/.github/workflows/sbom-attest.yml@main
     with:
+      registry: ghcr.io
+      image_name: tempest-concorde/fw-app
       image_digest: ${{ needs.merge-manifest.outputs.digest }}
     secrets:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # SLSA provenance must be called directly - it's a reusable workflow that cannot be wrapped
+  provenance:
+    needs: merge-manifest
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ghcr.io/tempest-concorde/fw-app
+      digest: ${{ needs.merge-manifest.outputs.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 #### Example: Semantic release
