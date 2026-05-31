@@ -1,0 +1,83 @@
+name: SLSA Provenance (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: 'Container registry (e.g., ghcr.io)'
+        required: true
+        type: string
+      image_name:
+        description: 'Image name without registry (e.g., tempest-concorde/fw-app)'
+        required: true
+        type: string
+      image_digest:
+        description: 'Image digest to attest'
+        required: true
+        type: string
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@74a1d0d1fa4e1be9e34b49e1918e33d6e7dab43b  # v3.3.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@06ec9fc82ffc1b9bba41fc6834a074eda8f5600b  # v0.18.2
+        with:
+          image: ${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+
+      - name: Upload SBOM as artifact
+        uses: actions/upload-artifact@6f51ac03b9356f520e9adb1b1b7802705f340c2b  # v4.5.0
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cyclonedx.json
+          retention-days: 90
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
+
+      - name: Attest SBOM with cosign
+        run: |
+          IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
+          cosign attest --yes \
+            --type cyclonedx \
+            --predicate sbom.cyclonedx.json \
+            "${IMAGE_REF}"
+          echo "✅ SBOM attested to: ${IMAGE_REF}"
+
+  provenance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Generate SLSA Build Provenance
+        uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+        with:
+          image: ${{ inputs.registry }}/${{ inputs.image_name }}
+          digest: ${{ inputs.image_digest }}
+          registry-username: ${{ github.actor }}
+        secrets:
+          registry-password: ${{ secrets.GITHUB_TOKEN }}

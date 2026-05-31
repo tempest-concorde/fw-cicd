@@ -1,0 +1,93 @@
+name: Merge Multi-Arch Manifest (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: 'Container registry (e.g., ghcr.io)'
+        required: true
+        type: string
+      image_name:
+        description: 'Image name without registry (e.g., tempest-concorde/fw-app)'
+        required: true
+        type: string
+      tag:
+        description: 'Tag for the multi-arch manifest (e.g., v1.0.0, latest)'
+        required: true
+        type: string
+      amd64_digest:
+        description: 'AMD64 image digest (optional, if built)'
+        required: false
+        type: string
+        default: ''
+      arm64_digest:
+        description: 'ARM64 image digest (required for RPI4)'
+        required: true
+        type: string
+    outputs:
+      digest:
+        description: 'Manifest list digest'
+        value: ${{ jobs.merge.outputs.digest }}
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # For cosign keyless signing
+
+    outputs:
+      digest: ${{ steps.create-manifest.outputs.digest }}
+
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@74a1d0d1fa4e1be9e34b49e1918e33d6e7dab43b  # v3.3.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
+
+      - name: Create and push multi-arch manifest
+        id: create-manifest
+        run: |
+          IMAGE_BASE="${{ inputs.registry }}/${{ inputs.image_name }}"
+          TAG="${{ inputs.tag }}"
+
+          # Build the manifest create command
+          MANIFEST_CMD="docker manifest create ${IMAGE_BASE}:${TAG}"
+
+          # Add ARM64 digest (required)
+          MANIFEST_CMD="${MANIFEST_CMD} ${IMAGE_BASE}@${{ inputs.arm64_digest }}"
+
+          # Add AMD64 digest if provided
+          if [ -n "${{ inputs.amd64_digest }}" ]; then
+            MANIFEST_CMD="${MANIFEST_CMD} ${IMAGE_BASE}@${{ inputs.amd64_digest }}"
+          fi
+
+          # Create and push manifest
+          eval "${MANIFEST_CMD}"
+          docker manifest push "${IMAGE_BASE}:${TAG}"
+
+          # Get the manifest digest
+          DIGEST=$(docker manifest inspect "${IMAGE_BASE}:${TAG}" | jq -r '.manifests[0].digest' || echo "")
+          if [ -z "${DIGEST}" ]; then
+            # Fallback: pull and get digest
+            docker pull "${IMAGE_BASE}:${TAG}" --platform linux/arm64
+            DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_BASE}:${TAG}" | cut -d'@' -f2)
+          fi
+
+          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+          echo "✅ Multi-arch manifest created: ${IMAGE_BASE}:${TAG}@${DIGEST}"
+
+      - name: Sign container image with cosign (keyless)
+        run: |
+          IMAGE_DIGEST="${{ inputs.registry }}/${{ inputs.image_name }}@${{ steps.create-manifest.outputs.digest }}"
+          cosign sign --yes "${IMAGE_DIGEST}"
+          echo "✅ Signed: ${IMAGE_DIGEST}"

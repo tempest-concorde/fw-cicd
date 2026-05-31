@@ -1,0 +1,65 @@
+name: 'Trivy Scan'
+description: 'Scan container images for vulnerabilities with Trivy and upload results to GitHub Security'
+author: 'Flight Wall Contributors'
+
+inputs:
+  image:
+    description: 'Full image reference with digest (e.g., ghcr.io/org/image@sha256:...)'
+    required: true
+  severity:
+    description: 'Comma-separated list of severities to report'
+    required: false
+    default: 'CRITICAL,HIGH'
+  fail-on-severity:
+    description: 'Fail the action if vulnerabilities of this severity or higher are found'
+    required: false
+    default: 'CRITICAL,HIGH'
+  sarif-file:
+    description: 'Path to output SARIF file'
+    required: false
+    default: 'trivy-results.sarif'
+  upload-sarif:
+    description: 'Upload SARIF to GitHub Security tab'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0  # v0.29.0
+      with:
+        image-ref: ${{ inputs.image }}
+        format: 'sarif'
+        output: ${{ inputs.sarif-file }}
+        severity: ${{ inputs.severity }}
+        exit-code: '0'  # Don't fail here, let the next step handle it
+
+    - name: Upload Trivy results to GitHub Security
+      if: inputs.upload-sarif == 'true' && always()
+      uses: github/codeql-action/upload-sarif@48a2423ec5fbc4c86fb41a0244f87ea32cd56571  # codeql-bundle-v3.28.0
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+
+    - name: Check for vulnerabilities
+      shell: bash
+      run: |
+        SEVERITIES="${{ inputs.fail-on-severity }}"
+        IMAGE="${{ inputs.image }}"
+
+        echo "🔍 Checking for vulnerabilities with severity: ${SEVERITIES}"
+
+        # Run trivy again in table format to display results
+        trivy image --severity "${SEVERITIES}" --no-progress "${IMAGE}"
+
+        # Check exit code and fail if vulnerabilities found
+        if trivy image --severity "${SEVERITIES}" --exit-code 1 --quiet "${IMAGE}"; then
+          echo "✅ No vulnerabilities found with severity: ${SEVERITIES}"
+        else
+          echo "❌ Vulnerabilities found with severity: ${SEVERITIES}"
+          exit 1
+        fi
+
+branding:
+  icon: 'shield'
+  color: 'red'

@@ -1,0 +1,40 @@
+name: 'Cosign Sign'
+description: 'Sign container images with cosign using keyless OIDC'
+author: 'Flight Wall Contributors'
+
+inputs:
+  image:
+    description: 'Full image reference with digest (e.g., ghcr.io/org/image@sha256:...)'
+    required: true
+  annotations:
+    description: 'Additional annotations (JSON format, e.g., {"key":"value"})'
+    required: false
+    default: '{}'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install cosign
+      uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
+      shell: bash
+
+    - name: Sign image with cosign
+      shell: bash
+      run: |
+        IMAGE="${{ inputs.image }}"
+        ANNOTATIONS='${{ inputs.annotations }}'
+
+        # Build annotation flags
+        ANNOTATION_FLAGS=""
+        if [ "${ANNOTATIONS}" != "{}" ]; then
+          ANNOTATION_FLAGS=$(echo "${ANNOTATIONS}" | jq -r 'to_entries | map("-a \(.key)=\(.value)") | join(" ")')
+        fi
+
+        # Sign with keyless OIDC (GitHub OIDC token)
+        cosign sign --yes ${ANNOTATION_FLAGS} "${IMAGE}"
+
+        echo "✅ Successfully signed: ${IMAGE}"
+
+branding:
+  icon: 'shield'
+  color: 'blue'
