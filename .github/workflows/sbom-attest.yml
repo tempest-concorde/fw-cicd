@@ -1,4 +1,4 @@
-name: SLSA Provenance (Reusable)
+name: SBOM Attestation (Reusable)
 
 on:
   workflow_call:
@@ -63,21 +63,3 @@ jobs:
             --predicate sbom.cyclonedx.json \
             "${IMAGE_REF}"
           echo "✅ SBOM attested to: ${IMAGE_REF}"
-
-  provenance:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      actions: read
-
-    steps:
-      - name: Generate SLSA Build Provenance
-        uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
-        with:
-          image: ${{ inputs.registry }}/${{ inputs.image_name }}
-          digest: ${{ inputs.image_digest }}
-          registry-username: ${{ github.actor }}
-        secrets:
-          registry-password: ${{ secrets.GITHUB_TOKEN }}
