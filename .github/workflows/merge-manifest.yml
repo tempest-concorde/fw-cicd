@@ -24,6 +24,11 @@ on:
         description: 'ARM64 image digest (required for RPI4)'
         required: true
         type: string
+      signing_mode:
+        description: 'Signing mode: key (default) or keyless'
+        required: false
+        type: string
+        default: 'key'
     outputs:
       digest:
         description: 'Manifest list digest'
@@ -31,6 +36,10 @@ on:
     secrets:
       GITHUB_TOKEN:
         required: true
+      COSIGN_PRIVATE_KEY:
+        required: false
+      COSIGN_PASSWORD:
+        required: false
 
 jobs:
   merge:
@@ -86,8 +95,19 @@ jobs:
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
           echo "✅ Multi-arch manifest created: ${IMAGE_BASE}:${TAG}@${DIGEST}"
 
+      - name: Sign container image with cosign (key-based)
+        if: inputs.signing_mode == 'key'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          IMAGE_DIGEST="${{ inputs.registry }}/${{ inputs.image_name }}@${{ steps.create-manifest.outputs.digest }}"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "${IMAGE_DIGEST}"
+          echo "✅ Signed (key-based): ${IMAGE_DIGEST}"
+
       - name: Sign container image with cosign (keyless)
+        if: inputs.signing_mode == 'keyless'
         run: |
           IMAGE_DIGEST="${{ inputs.registry }}/${{ inputs.image_name }}@${{ steps.create-manifest.outputs.digest }}"
           cosign sign --yes "${IMAGE_DIGEST}"
-          echo "✅ Signed: ${IMAGE_DIGEST}"
+          echo "✅ Signed (keyless): ${IMAGE_DIGEST}"

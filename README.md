@@ -12,16 +12,19 @@ This repository provides DRY (Don't Repeat Yourself) CI/CD components consumed b
 
 Located in `.github/workflows/`:
 
-- **build-container.yml** - Per-architecture container build with Trivy scanning and GHCR push
-- **merge-manifest.yml** - Multi-arch manifest creation and cosign signing
-- **sbom-attest.yml** - SBOM generation (CycloneDX) and cosign attestation
-- **semantic-release.yml** - Conventional commits → semantic versioning
+- **build-container.yml** - Docker Buildx per-architecture build with Trivy scanning and GHCR push
+- **build-bootc.yml** - UBI9 + buildah bootc image build with parameterized smoke tests (ARM64)
+- **cosign-sign-verify.yml** - Key-based or keyless cosign signing with verification
+- **commitlint.yml** - PR title validation via commitlint
+- **merge-manifest.yml** - Multi-arch manifest creation and cosign signing (key-based or keyless)
+- **sbom-attest.yml** - SBOM generation (CycloneDX) and cosign attestation (key-based or keyless)
+- **semantic-release.yml** - Conventional commits → semantic versioning (global or local config)
 
 ### Composite Actions
 
 Located in `actions/`:
 
-- **cosign-sign** - Cosign image signing with keyless OIDC
+- **cosign-sign** - Cosign image signing (key-based or keyless OIDC)
 - **trivy-scan** - Container vulnerability scanning with SARIF upload to GitHub Security
 
 ## Usage

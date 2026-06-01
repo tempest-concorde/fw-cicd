@@ -1,0 +1,136 @@
+name: Build bootc Image (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: 'Container registry (e.g., ghcr.io)'
+        required: true
+        type: string
+      image_name:
+        description: 'Image name without registry (e.g., tempest-concorde/fedora-bootc-pi)'
+        required: true
+        type: string
+      containerfile:
+        description: 'Path to Containerfile'
+        required: false
+        type: string
+        default: 'Containerfile'
+      platform:
+        description: 'Build platform (e.g., linux/arm64)'
+        required: false
+        type: string
+        default: 'linux/arm64'
+      push:
+        description: 'Push image to registry'
+        required: false
+        type: boolean
+        default: false
+      tags:
+        description: 'Space-separated image tags'
+        required: false
+        type: string
+        default: ''
+      smoke_test_script:
+        description: 'Shell script for buildah mount smoke tests. $MOUNT is the chroot mount point, $IMAGE_REF is the local image reference.'
+        required: false
+        type: string
+        default: ''
+      extra_packages:
+        description: 'Additional DNF packages to install in UBI9 builder (space-separated)'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      digest:
+        description: 'Image digest (set only when push=true)'
+        value: ${{ jobs.build.outputs.digest }}
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+
+jobs:
+  build:
+    runs-on: ${{ contains(inputs.platform, 'arm64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    container:
+      image: registry.access.redhat.com/ubi9/ubi
+      options: --privileged
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+
+    steps:
+      - name: Install container tools
+        run: |
+          dnf -y install podman buildah skopeo make wget git ${{ inputs.extra_packages }}
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Workaround podman-login auth
+        run: |
+          mkdir -p $HOME/.docker
+          echo '{ "auths": {} }' > $HOME/.docker/config.json
+
+      - name: Compute tags
+        id: tags
+        run: |
+          if [ -n "${{ inputs.tags }}" ]; then
+            echo "tags=${{ inputs.tags }}" >> $GITHUB_OUTPUT
+          else
+            echo "tags=test ${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build image
+        id: build
+        uses: redhat-actions/buildah-build@2c1a11f20fed618a4481e845afe3a41e07d9c21a  # v2.13
+        with:
+          image: ${{ inputs.image_name }}
+          tags: ${{ steps.tags.outputs.tags }}
+          platforms: ${{ inputs.platform }}
+          containerfiles: |
+            ./${{ inputs.containerfile }}
+
+      - name: Smoke test (buildah mount)
+        if: inputs.smoke_test_script != ''
+        run: |
+          IMAGE_REF="${{ steps.build.outputs.image-with-tag }}"
+          echo "Testing image: $IMAGE_REF"
+          podman image inspect "$IMAGE_REF" --format '{{.Id}}'
+          CONTAINER=$(buildah from "$IMAGE_REF")
+          MOUNT=$(buildah mount $CONTAINER)
+          # Run caller's smoke test
+          ${{ inputs.smoke_test_script }}
+          buildah unmount $CONTAINER
+          buildah rm $CONTAINER
+          echo "All smoke tests passed"
+
+      - name: Log in to registry
+        if: inputs.push
+        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603  # v1.9
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ inputs.registry }}
+          auth_file_path: /run/containers/0/auth.json
+
+      - name: Push to registry
+        if: inputs.push
+        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c  # v2.8
+        with:
+          image: ${{ inputs.image_name }}
+          tags: ${{ steps.tags.outputs.tags }}
+          registry: ${{ inputs.registry }}
+
+      - name: Get digest
+        if: inputs.push
+        id: digest
+        run: |
+          # Use the first tag to get the digest
+          FIRST_TAG=$(echo "${{ steps.tags.outputs.tags }}" | awk '{print $1}')
+          DIGEST=$(podman image inspect --format '{{ .Digest }}' ${{ inputs.registry }}/${{ inputs.image_name }}:${FIRST_TAG} 2>/dev/null || \
+                   skopeo inspect docker://${{ inputs.registry }}/${{ inputs.image_name }}:${FIRST_TAG} | jq -r '.Digest')
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Image digest: $DIGEST"

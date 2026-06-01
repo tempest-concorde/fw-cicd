@@ -10,6 +10,10 @@ inputs:
     description: 'Additional annotations (JSON format, e.g., {"key":"value"})'
     required: false
     default: '{}'
+  signing_mode:
+    description: 'Signing mode: key (default) or keyless'
+    required: false
+    default: 'key'
 
 runs:
   using: 'composite'
@@ -18,7 +22,28 @@ runs:
       uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
       shell: bash
 
-    - name: Sign image with cosign
+    - name: Sign image with cosign (key-based)
+      if: inputs.signing_mode == 'key'
+      shell: bash
+      env:
+        COSIGN_PRIVATE_KEY: ${{ env.COSIGN_PRIVATE_KEY }}
+        COSIGN_PASSWORD: ${{ env.COSIGN_PASSWORD }}
+      run: |
+        IMAGE="${{ inputs.image }}"
+        ANNOTATIONS='${{ inputs.annotations }}'
+
+        # Build annotation flags
+        ANNOTATION_FLAGS=""
+        if [ "${ANNOTATIONS}" != "{}" ]; then
+          ANNOTATION_FLAGS=$(echo "${ANNOTATIONS}" | jq -r 'to_entries | map("-a \(.key)=\(.value)") | join(" ")')
+        fi
+
+        # Sign with key-based cosign
+        cosign sign --yes --key env://COSIGN_PRIVATE_KEY ${ANNOTATION_FLAGS} "${IMAGE}"
+        echo "✅ Successfully signed (key-based): ${IMAGE}"
+
+    - name: Sign image with cosign (keyless)
+      if: inputs.signing_mode == 'keyless'
       shell: bash
       run: |
         IMAGE="${{ inputs.image }}"
@@ -32,8 +57,7 @@ runs:
 
         # Sign with keyless OIDC (GitHub OIDC token)
         cosign sign --yes ${ANNOTATION_FLAGS} "${IMAGE}"
-
-        echo "✅ Successfully signed: ${IMAGE}"
+        echo "✅ Successfully signed (keyless): ${IMAGE}"
 
 branding:
   icon: 'shield'
