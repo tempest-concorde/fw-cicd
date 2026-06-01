@@ -1,0 +1,103 @@
+name: Cosign Sign and Verify (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: 'Container registry (e.g., ghcr.io)'
+        required: true
+        type: string
+      image_name:
+        description: 'Image name without registry (e.g., tempest-concorde/fedora-bootc-pi)'
+        required: true
+        type: string
+      image_digest:
+        description: 'Image digest to sign (sha256:...)'
+        required: true
+        type: string
+      version:
+        description: 'Version tag for annotation'
+        required: false
+        type: string
+        default: ''
+      signing_mode:
+        description: 'Signing mode: key (default) or keyless'
+        required: false
+        type: string
+        default: 'key'
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+      COSIGN_PRIVATE_KEY:
+        required: false
+      COSIGN_PASSWORD:
+        required: false
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # For keyless OIDC
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@74a1d0d1fa4e1be9e34b49e1918e33d6e7dab43b  # v3.3.0
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
+
+      - name: Sign image with key-based cosign
+        if: inputs.signing_mode == 'key'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
+
+          ANNOTATIONS=""
+          if [ -n "${{ inputs.version }}" ]; then
+            ANNOTATIONS="$ANNOTATIONS -a tag=${{ inputs.version }}"
+          fi
+          ANNOTATIONS="$ANNOTATIONS -a sha=${{ github.sha }}"
+          ANNOTATIONS="$ANNOTATIONS -a run_id=${{ github.run_id }}"
+          ANNOTATIONS="$ANNOTATIONS -a run_attempt=${{ github.run_attempt }}"
+
+          cosign sign --yes \
+            --key env://COSIGN_PRIVATE_KEY \
+            --recursive \
+            $ANNOTATIONS \
+            "${IMAGE_REF}"
+
+          echo "Signed: ${IMAGE_REF}"
+
+      - name: Sign image with keyless cosign
+        if: inputs.signing_mode == 'keyless'
+        run: |
+          IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
+
+          ANNOTATIONS=""
+          if [ -n "${{ inputs.version }}" ]; then
+            ANNOTATIONS="$ANNOTATIONS -a tag=${{ inputs.version }}"
+          fi
+          ANNOTATIONS="$ANNOTATIONS -a sha=${{ github.sha }}"
+          ANNOTATIONS="$ANNOTATIONS -a run_id=${{ github.run_id }}"
+          ANNOTATIONS="$ANNOTATIONS -a run_attempt=${{ github.run_attempt }}"
+
+          cosign sign --yes $ANNOTATIONS "${IMAGE_REF}"
+          echo "Signed (keyless): ${IMAGE_REF}"
+
+      - name: Verify signature (key-based)
+        if: inputs.signing_mode == 'key'
+        env:
+          COSIGN_PUBLIC_KEY: ${{ vars.COSIGN_PUBLIC_KEY }}
+        run: |
+          IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
+          echo "$COSIGN_PUBLIC_KEY" > /tmp/cosign.pub
+          cosign verify --key /tmp/cosign.pub "${IMAGE_REF}"
+          rm -f /tmp/cosign.pub
+          echo "Signature verified: ${IMAGE_REF}"

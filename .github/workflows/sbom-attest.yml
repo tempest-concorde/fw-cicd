@@ -15,9 +15,18 @@ on:
         description: 'Image digest to attest'
         required: true
         type: string
+      signing_mode:
+        description: 'Signing mode: key (default) or keyless'
+        required: false
+        type: string
+        default: 'key'
     secrets:
       GITHUB_TOKEN:
         required: true
+      COSIGN_PRIVATE_KEY:
+        required: false
+      COSIGN_PASSWORD:
+        required: false
 
 jobs:
   sbom:
@@ -55,11 +64,26 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
 
-      - name: Attest SBOM with cosign
+      - name: Attest SBOM with cosign (key-based)
+        if: inputs.signing_mode == 'key'
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
+          cosign attest --yes \
+            --key env://COSIGN_PRIVATE_KEY \
+            --type cyclonedx \
+            --predicate sbom.cyclonedx.json \
+            "${IMAGE_REF}"
+          echo "✅ SBOM attested (key-based) to: ${IMAGE_REF}"
+
+      - name: Attest SBOM with cosign (keyless)
+        if: inputs.signing_mode == 'keyless'
         run: |
           IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
           cosign attest --yes \
             --type cyclonedx \
             --predicate sbom.cyclonedx.json \
             "${IMAGE_REF}"
-          echo "✅ SBOM attested to: ${IMAGE_REF}"
+          echo "✅ SBOM attested (keyless) to: ${IMAGE_REF}"
