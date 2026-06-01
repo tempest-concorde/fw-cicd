@@ -42,14 +42,14 @@ jobs:
       id-token: write  # For keyless OIDC
     steps:
       - name: Log in to Container Registry
-        uses: docker/login-action@74a1d0d1fa4e1be9e34b49e1918e33d6e7dab43b  # v3.3.0
-        with:
-          registry: ${{ inputs.registry }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          podman login ${{ inputs.registry }} \
+            -u ${{ github.actor }} \
+            -p "${{ secrets.GITHUB_TOKEN }}" \
+            --compat-auth-file $HOME/.docker/config.json
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
       - name: Sign image with key-based cosign
         if: inputs.signing_mode == 'key'

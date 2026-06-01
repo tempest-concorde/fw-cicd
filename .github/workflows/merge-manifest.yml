@@ -54,14 +54,14 @@ jobs:
 
     steps:
       - name: Log in to Container Registry
-        uses: docker/login-action@74a1d0d1fa4e1be9e34b49e1918e33d6e7dab43b  # v3.3.0
-        with:
-          registry: ${{ inputs.registry }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          podman login ${{ inputs.registry }} \
+            -u ${{ github.actor }} \
+            -p "${{ secrets.GITHUB_TOKEN }}" \
+            --compat-auth-file $HOME/.docker/config.json
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da  # v3.7.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
       - name: Create and push multi-arch manifest
         id: create-manifest
@@ -69,28 +69,22 @@ jobs:
           IMAGE_BASE="${{ inputs.registry }}/${{ inputs.image_name }}"
           TAG="${{ inputs.tag }}"
 
-          # Build the manifest create command
-          MANIFEST_CMD="docker manifest create ${IMAGE_BASE}:${TAG}"
+          # Create manifest list
+          podman manifest create ${IMAGE_BASE}:${TAG}
 
           # Add ARM64 digest (required)
-          MANIFEST_CMD="${MANIFEST_CMD} ${IMAGE_BASE}@${{ inputs.arm64_digest }}"
+          podman manifest add ${IMAGE_BASE}:${TAG} ${IMAGE_BASE}@${{ inputs.arm64_digest }}
 
           # Add AMD64 digest if provided
           if [ -n "${{ inputs.amd64_digest }}" ]; then
-            MANIFEST_CMD="${MANIFEST_CMD} ${IMAGE_BASE}@${{ inputs.amd64_digest }}"
+            podman manifest add ${IMAGE_BASE}:${TAG} ${IMAGE_BASE}@${{ inputs.amd64_digest }}
           fi
 
-          # Create and push manifest
-          eval "${MANIFEST_CMD}"
-          docker manifest push "${IMAGE_BASE}:${TAG}"
+          # Push manifest
+          podman manifest push ${IMAGE_BASE}:${TAG}
 
-          # Get the manifest digest
-          DIGEST=$(docker manifest inspect "${IMAGE_BASE}:${TAG}" | jq -r '.manifests[0].digest' || echo "")
-          if [ -z "${DIGEST}" ]; then
-            # Fallback: pull and get digest
-            docker pull "${IMAGE_BASE}:${TAG}" --platform linux/arm64
-            DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE_BASE}:${TAG}" | cut -d'@' -f2)
-          fi
+          # Get the manifest digest via skopeo
+          DIGEST=$(skopeo inspect --raw docker://${IMAGE_BASE}:${TAG} | jq -r '.manifests[0].digest')
 
           echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
           echo "✅ Multi-arch manifest created: ${IMAGE_BASE}:${TAG}@${DIGEST}"
