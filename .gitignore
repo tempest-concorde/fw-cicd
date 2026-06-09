@@ -15,3 +15,5 @@ trivy-results/
 # OS files
 .DS_Store
 Thumbs.db
+.vscode/
+.claude/
