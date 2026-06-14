@@ -48,7 +48,7 @@ jobs:
             --compat-auth-file $HOME/.docker/config.json
 
       - name: Generate SBOM with Syft
-        uses: anchore/sbom-action@06ec9fc82ffc1b9bba41fc6834a074eda8f5600b  # v0.18.2
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
         with:
           image: ${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}
           format: cyclonedx-json
