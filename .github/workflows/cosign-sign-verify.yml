@@ -26,8 +26,6 @@ on:
         type: string
         default: 'key'
     secrets:
-      GITHUB_TOKEN:
-        required: true
       COSIGN_PRIVATE_KEY:
         required: false
       COSIGN_PASSWORD:
