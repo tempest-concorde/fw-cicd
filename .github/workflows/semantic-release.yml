@@ -66,14 +66,32 @@ jobs:
         if: inputs.use_local_config == true
         run: npm ci
 
+      - name: Get latest tag before release
+        id: before
+        run: |
+          BEFORE=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+          echo "tag=$BEFORE" >> $GITHUB_OUTPUT
+
       - name: Run semantic-release
-        id: semantic
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           npx semantic-release --ci
 
-      - name: Output release info
-        if: steps.semantic.outputs.new_release_published == 'true'
+      - name: Detect new release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          echo "New release published: v${{ steps.semantic.outputs.new_release_version }}"
+          git fetch --tags
+          AFTER=$(git describe --tags --abbrev=0 2>/dev/null || echo "none")
+          BEFORE="${{ steps.before.outputs.tag }}"
+          if [ "$AFTER" != "$BEFORE" ] && [ "$AFTER" != "none" ]; then
+            VERSION="${AFTER#v}"
+            echo "new_release_published=true" >> $GITHUB_OUTPUT
+            echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
+            echo "New release published: $AFTER"
+          else
+            echo "new_release_published=false" >> $GITHUB_OUTPUT
+            echo "No new release"
+          fi
