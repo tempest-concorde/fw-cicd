@@ -48,6 +48,8 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: 'v2.2.4'
 
       - name: Sign image with key-based cosign
         if: inputs.signing_mode == 'key'
@@ -65,19 +67,14 @@ jobs:
           ANNOTATIONS="$ANNOTATIONS -a run_id=${{ github.run_id }}"
           ANNOTATIONS="$ANNOTATIONS -a run_attempt=${{ github.run_attempt }}"
 
-          # --new-bundle-format=false: produce simplesigning format
-          #   (application/vnd.dev.cosign.simplesigning.v1+json) instead of
-          #   sigstore bundle v0.3. containers/image (podman, bootc, skopeo)
-          #   on Fedora 42 does not recognize the new bundle format.
-          # --registry-referrers-mode=legacy: store signature as sha256-DIGEST.sig
-          #   tag instead of OCI 1.1 Referrers API. containers/image discovers
-          #   signatures by looking up the .sig-suffixed tag.
-          # --tlog-upload=false: skip Rekor transparency log (private key signing
-          #   does not need public transparency).
+          # cosign v2.2.4 produces simplesigning format natively
+          # (application/vnd.dev.cosign.simplesigning.v1+json) which
+          # containers/image (podman, bootc, skopeo) on Fedora recognizes.
+          # v2.3+ switched to sigstore bundle v0.3 which is incompatible.
+          # --tlog-upload=false: skip Rekor transparency log (private key
+          #   signing does not need public transparency).
           cosign sign --yes \
             --key env://COSIGN_PRIVATE_KEY \
-            --new-bundle-format=false \
-            --registry-referrers-mode=legacy \
             --tlog-upload=false \
             $ANNOTATIONS \
             "${IMAGE_REF}"
@@ -98,7 +95,6 @@ jobs:
           ANNOTATIONS="$ANNOTATIONS -a run_attempt=${{ github.run_attempt }}"
 
           cosign sign --yes \
-            --registry-referrers-mode=legacy \
             $ANNOTATIONS \
             "${IMAGE_REF}"
           echo "Signed (keyless): ${IMAGE_REF}"
