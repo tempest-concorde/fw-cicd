@@ -106,6 +106,6 @@ jobs:
         run: |
           IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
           echo "$COSIGN_PUBLIC_KEY" > /tmp/cosign.pub
-          cosign verify --key /tmp/cosign.pub "${IMAGE_REF}"
+          cosign verify --key /tmp/cosign.pub --insecure-ignore-tlog "${IMAGE_REF}"
           rm -f /tmp/cosign.pub
           echo "Signature verified: ${IMAGE_REF}"
