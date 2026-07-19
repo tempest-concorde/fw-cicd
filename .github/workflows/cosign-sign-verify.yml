@@ -65,10 +65,20 @@ jobs:
           ANNOTATIONS="$ANNOTATIONS -a run_id=${{ github.run_id }}"
           ANNOTATIONS="$ANNOTATIONS -a run_attempt=${{ github.run_attempt }}"
 
+          # --new-bundle-format=false: produce simplesigning format
+          #   (application/vnd.dev.cosign.simplesigning.v1+json) instead of
+          #   sigstore bundle v0.3. containers/image (podman, bootc, skopeo)
+          #   on Fedora 42 does not recognize the new bundle format.
+          # --registry-referrers-mode=legacy: store signature as sha256-DIGEST.sig
+          #   tag instead of OCI 1.1 Referrers API. containers/image discovers
+          #   signatures by looking up the .sig-suffixed tag.
+          # --tlog-upload=false: skip Rekor transparency log (private key signing
+          #   does not need public transparency).
           cosign sign --yes \
             --key env://COSIGN_PRIVATE_KEY \
-            --recursive \
-            --registry-referrers-mode legacy \
+            --new-bundle-format=false \
+            --registry-referrers-mode=legacy \
+            --tlog-upload=false \
             $ANNOTATIONS \
             "${IMAGE_REF}"
 
@@ -88,40 +98,10 @@ jobs:
           ANNOTATIONS="$ANNOTATIONS -a run_attempt=${{ github.run_attempt }}"
 
           cosign sign --yes \
-            --registry-referrers-mode legacy \
+            --registry-referrers-mode=legacy \
             $ANNOTATIONS \
             "${IMAGE_REF}"
           echo "Signed (keyless): ${IMAGE_REF}"
-
-      - name: Copy signature to .sig tag for containers/image compatibility
-        run: |
-          # cosign v2 --registry-referrers-mode legacy creates a sha256-DIGEST tag
-          # containing an OCI image index. containers/image (podman, bootc) expects
-          # the .sig tag to be a single OCI image manifest, not an index.
-          # Extract the inner manifest digest and copy just that manifest.
-          DIGEST="${{ inputs.image_digest }}"
-          DIGEST_TAG="sha256-${DIGEST#sha256:}"
-          SIG_TAG="${DIGEST_TAG}.sig"
-          SRC="${{ inputs.registry }}/${{ inputs.image_name }}:${DIGEST_TAG}"
-          DST="${{ inputs.registry }}/${{ inputs.image_name }}:${SIG_TAG}"
-
-          if skopeo inspect --raw "docker://${SRC}" >/dev/null 2>&1; then
-            # Get the inner manifest digest from the index
-            INNER_DIGEST=$(skopeo inspect --raw "docker://${SRC}" | \
-              jq -r '.manifests[0].digest')
-            if [ -n "$INNER_DIGEST" ] && [ "$INNER_DIGEST" != "null" ]; then
-              # Copy the inner manifest directly (not the index wrapper)
-              INNER_SRC="${{ inputs.registry }}/${{ inputs.image_name }}@${INNER_DIGEST}"
-              skopeo copy "docker://${INNER_SRC}" "docker://${DST}"
-              echo "Copied inner signature manifest: ${INNER_DIGEST} → ${SIG_TAG}"
-            else
-              # Fallback: source is already a single manifest, copy directly
-              skopeo copy "docker://${SRC}" "docker://${DST}"
-              echo "Copied signature tag: ${DIGEST_TAG} → ${SIG_TAG}"
-            fi
-          else
-            echo "WARNING: signature tag ${DIGEST_TAG} not found — skipping .sig copy"
-          fi
 
       - name: Verify signature (key-based)
         if: inputs.signing_mode == 'key'
