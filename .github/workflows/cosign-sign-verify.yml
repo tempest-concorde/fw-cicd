@@ -68,6 +68,7 @@ jobs:
           cosign sign --yes \
             --key env://COSIGN_PRIVATE_KEY \
             --recursive \
+            --registry-referrers-mode legacy \
             $ANNOTATIONS \
             "${IMAGE_REF}"
 
@@ -86,7 +87,10 @@ jobs:
           ANNOTATIONS="$ANNOTATIONS -a run_id=${{ github.run_id }}"
           ANNOTATIONS="$ANNOTATIONS -a run_attempt=${{ github.run_attempt }}"
 
-          cosign sign --yes $ANNOTATIONS "${IMAGE_REF}"
+          cosign sign --yes \
+            --registry-referrers-mode legacy \
+            $ANNOTATIONS \
+            "${IMAGE_REF}"
           echo "Signed (keyless): ${IMAGE_REF}"
 
       - name: Verify signature (key-based)
