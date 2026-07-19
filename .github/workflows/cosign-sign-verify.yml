@@ -95,8 +95,10 @@ jobs:
 
       - name: Copy signature to .sig tag for containers/image compatibility
         run: |
-          # cosign v2 --registry-referrers-mode legacy creates sha256-DIGEST tag
-          # but containers/image (podman, bootc) expects sha256-DIGEST.sig tag
+          # cosign v2 --registry-referrers-mode legacy creates a sha256-DIGEST tag
+          # containing an OCI image index. containers/image (podman, bootc) expects
+          # the .sig tag to be a single OCI image manifest, not an index.
+          # Extract the inner manifest digest and copy just that manifest.
           DIGEST="${{ inputs.image_digest }}"
           DIGEST_TAG="sha256-${DIGEST#sha256:}"
           SIG_TAG="${DIGEST_TAG}.sig"
@@ -104,8 +106,19 @@ jobs:
           DST="${{ inputs.registry }}/${{ inputs.image_name }}:${SIG_TAG}"
 
           if skopeo inspect --raw "docker://${SRC}" >/dev/null 2>&1; then
-            skopeo copy --all "docker://${SRC}" "docker://${DST}"
-            echo "Copied signature tag: ${DIGEST_TAG} → ${SIG_TAG}"
+            # Get the inner manifest digest from the index
+            INNER_DIGEST=$(skopeo inspect --raw "docker://${SRC}" | \
+              jq -r '.manifests[0].digest')
+            if [ -n "$INNER_DIGEST" ] && [ "$INNER_DIGEST" != "null" ]; then
+              # Copy the inner manifest directly (not the index wrapper)
+              INNER_SRC="${{ inputs.registry }}/${{ inputs.image_name }}@${INNER_DIGEST}"
+              skopeo copy "docker://${INNER_SRC}" "docker://${DST}"
+              echo "Copied inner signature manifest: ${INNER_DIGEST} → ${SIG_TAG}"
+            else
+              # Fallback: source is already a single manifest, copy directly
+              skopeo copy "docker://${SRC}" "docker://${DST}"
+              echo "Copied signature tag: ${DIGEST_TAG} → ${SIG_TAG}"
+            fi
           else
             echo "WARNING: signature tag ${DIGEST_TAG} not found — skipping .sig copy"
           fi
