@@ -50,7 +50,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Compute tags
         id: tags
@@ -78,7 +78,7 @@ jobs:
 
       - name: Log in to registry
         if: inputs.push
-        uses: redhat-actions/podman-login@4934294ad0449894bcd1e9f191899d7292469603  # v1.7
+        uses: redhat-actions/podman-login@50c2d9a331bb67c8fdab99b86455fad05e2e3252  # v2.0
         with:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -86,7 +86,7 @@ jobs:
 
       - name: Push to registry
         if: inputs.push
-        uses: redhat-actions/push-to-registry@5ed88d269cf581ea9ef6dd6806d01562096bee9c  # v2.8
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37  # v3.0.0
         with:
           image: ${{ inputs.image_name }}
           tags: ${{ steps.tags.outputs.tags }}
@@ -114,6 +114,6 @@ jobs:
 
       - name: Upload Trivy results to GitHub Security
         if: inputs.push && always()
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a  # v4.36.3
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
         with:
           sarif_file: 'trivy-results.sarif'
