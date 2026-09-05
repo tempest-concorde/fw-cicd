@@ -1,0 +1,107 @@
+name: Digest Sync (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: 'check (default) or update'
+        required: false
+        type: string
+        default: 'check'
+      sentinel_file:
+        description: 'Path to sentinel Containerfile whose FROM line carries the image:tag@sha256 reference to track'
+        required: true
+        type: string
+      quadlet_files:
+        description: 'Space-separated list of quadlet files whose Image= lines must match the sentinel reference'
+        required: true
+        type: string
+    secrets:
+      token:
+        description: 'Optional PAT for pushing in update mode. Defaults to GITHUB_TOKEN.'
+        required: false
+
+jobs:
+  digest-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # In update mode we need the PR head branch so the sync commit lands
+          # on the Dependabot PR branch, not on main.
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref }}
+          token: ${{ secrets.token || github.token }}
+
+      - name: Read sentinel reference
+        id: sentinel
+        run: |
+          FROM_LINE=$(grep -E '^FROM ' "${{ inputs.sentinel_file }}" | head -n1)
+          if [ -z "$FROM_LINE" ]; then
+            echo "::error::No FROM line found in ${{ inputs.sentinel_file }}"
+            exit 1
+          fi
+          REF=$(echo "$FROM_LINE" | sed 's/^FROM[[:space:]]*//')
+          echo "sentinel_reference=$REF" >> "$GITHUB_OUTPUT"
+          echo "Sentinel reference: $REF"
+
+      - name: Verify sentinel reference resolves
+        run: |
+          REF="${{ steps.sentinel.outputs.sentinel_reference }}"
+          echo "Resolving: $REF"
+          docker manifest inspect "$REF" >/dev/null \
+            || { echo "::error::Sentinel reference does not resolve: $REF"; exit 1; }
+          echo "Reference resolves OK"
+
+      - name: Verify quadlets match sentinel
+        if: inputs.mode == 'check'
+        run: |
+          EXPECTED="${{ steps.sentinel.outputs.sentinel_reference }}"
+          FAILED=0
+          for f in ${{ inputs.quadlet_files }}; do
+            CURRENT=$(grep -E '^Image=' "$f" | head -n1 | sed 's/^Image=//')
+            echo "$f -> $CURRENT"
+            if [ -z "$CURRENT" ]; then
+              echo "::error file=$f::No Image= line found in $f"
+              FAILED=1
+            elif [ "$CURRENT" != "$EXPECTED" ]; then
+              echo "::error file=$f::Image= does not match sentinel (expected: $EXPECTED, got: $CURRENT)"
+              FAILED=1
+            fi
+          done
+          exit $FAILED
+
+      - name: Sync quadlets to sentinel reference
+        id: sync
+        if: inputs.mode == 'update'
+        run: |
+          EXPECTED="${{ steps.sentinel.outputs.sentinel_reference }}"
+          CHANGED=0
+          for f in ${{ inputs.quadlet_files }}; do
+            CURRENT=$(grep -E '^Image=' "$f" | head -n1 | sed 's/^Image=//')
+            if [ "$CURRENT" != "$EXPECTED" ]; then
+              sed -i "s|^Image=.*|Image=${EXPECTED}|" "$f"
+              echo "Updated $f -> $EXPECTED"
+              CHANGED=1
+            else
+              echo "$f already in sync"
+            fi
+          done
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push sync
+        if: inputs.mode == 'update' && steps.sync.outputs.changed == '1'
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ${{ inputs.quadlet_files }}
+          # [dependabot skip] lets Dependabot continue rebasing/force-pushing this
+          # branch; the workflow re-runs on each sync and re-applies the sync.
+          git commit -m "chore(deps): sync quadlet image digests with sentinel [dependabot skip]"
+          git push origin "HEAD:${{ github.head_ref || github.ref }}"
+          echo "Pushed sync commit to ${{ github.head_ref || github.ref }}"
