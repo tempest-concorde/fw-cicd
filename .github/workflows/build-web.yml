@@ -1,0 +1,64 @@
+name: Web Build (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: 'Directory containing package.json (relative to repo root)'
+        required: false
+        type: string
+        default: 'web'
+      node_version:
+        description: 'Node.js version to install'
+        required: false
+        type: string
+        default: '20'
+      run_typecheck:
+        description: 'Run the frontend typecheck script (npm run typecheck)'
+        required: false
+        type: boolean
+        default: true
+      run_lint:
+        description: 'Run the frontend lint script (npm run lint)'
+        required: false
+        type: boolean
+        default: true
+      run_build:
+        description: 'Run the frontend build script (npm run build)'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    name: Frontend build, lint & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working_directory }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ inputs.working_directory }}
+        run: npm ci
+
+      - name: Typecheck
+        if: inputs.run_typecheck
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run typecheck
+
+      - name: Lint
+        if: inputs.run_lint
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run lint
+
+      - name: Build
+        if: inputs.run_build
+        working-directory: ${{ inputs.working_directory }}
+        run: npm run build
