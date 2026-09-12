@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: true
+      govulncheck_version:
+        description: 'govulncheck version (must be compatible with the repo Go version)'
+        required: false
+        type: string
+        default: 'v1.7.0'
       working_directory:
         description: 'Working directory for Go commands'
         required: false
@@ -63,7 +68,7 @@ jobs:
 
       - name: Install govulncheck
         if: inputs.run_govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@${{ inputs.govulncheck_version }}
 
       - name: Run govulncheck
         if: inputs.run_govulncheck
