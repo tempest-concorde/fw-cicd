@@ -96,6 +96,7 @@ jobs:
         if: inputs.mode == 'update' && steps.sync.outputs.changed == '1'
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
+          TARGET_REF: ${{ github.head_ref || github.ref }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -103,5 +104,5 @@ jobs:
           # [dependabot skip] lets Dependabot continue rebasing/force-pushing this
           # branch; the workflow re-runs on each sync and re-applies the sync.
           git commit -m "chore(deps): sync quadlet image digests with sentinel [dependabot skip]"
-          git push origin "HEAD:${{ github.head_ref || github.ref }}"
-          echo "Pushed sync commit to ${{ github.head_ref || github.ref }}"
+          git push origin "HEAD:${TARGET_REF}"
+          echo "Pushed sync commit to ${TARGET_REF}"
