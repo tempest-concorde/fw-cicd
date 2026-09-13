@@ -12,9 +12,19 @@ on:
         required: true
         type: string
       image_digest:
-        description: 'Image digest to attest'
+        description: 'Image digest to attest (sha256:...)'
         required: true
         type: string
+      version:
+        description: 'Release version; used for the release asset name (leading "v" tolerated)'
+        required: false
+        type: string
+        default: ''
+      is_release:
+        description: 'When true, an SBOM failure fails the caller; when false, it is a warning'
+        required: false
+        type: boolean
+        default: true
       signing_mode:
         description: 'Signing mode: key (default) or keyless'
         required: false
@@ -27,14 +37,24 @@ on:
         required: false
       COSIGN_PASSWORD:
         required: false
+    outputs:
+      sbom_asset:
+        description: 'Name of the SPDX release asset attached (empty if not attached)'
+        value: ${{ jobs.sbom.outputs.sbom_asset }}
+      sbom_attested:
+        description: 'Whether the cosign attestation was published'
+        value: ${{ jobs.sbom.outputs.sbom_attested }}
 
 jobs:
   sbom:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
-      id-token: write
+      contents: write   # attach the SBOM to the GitHub Release
+      packages: write   # push the cosign attestation to the registry
+      id-token: write   # keyless/OIDC
+    outputs:
+      sbom_asset: ${{ steps.upload.outputs.asset_name }}
+      sbom_attested: ${{ steps.attest.outputs.attested }}
 
     steps:
       - name: Checkout
@@ -47,43 +67,70 @@ jobs:
             -p "${{ secrets.GITHUB_TOKEN }}" \
             --compat-auth-file $HOME/.docker/config.json
 
-      - name: Generate SBOM with Syft
+      - name: Generate SBOM with Syft (SPDX 2.3)
+        id: generate
+        continue-on-error: ${{ !inputs.is_release }}
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
         with:
           image: ${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}
-          format: cyclonedx-json
-          output-file: sbom.cyclonedx.json
+          format: spdx-json
+          output-file: sbom.spdx.json
 
-      - name: Upload SBOM as artifact
+      - name: Warn when SBOM generation failed on a non-release build
+        if: steps.generate.outcome != 'success' && !inputs.is_release
+        run: echo "::warning::SBOM generation failed for ${{ inputs.image_name }}@${{ inputs.image_digest }} (non-release build; continuing)"
+
+      - name: Upload SBOM as workflow artifact
+        if: steps.generate.outcome == 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: sbom-cyclonedx
-          path: sbom.cyclonedx.json
+          name: sbom-spdx
+          path: sbom.spdx.json
           retention-days: 90
 
       - name: Install cosign
+        if: steps.generate.outcome == 'success'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
-      - name: Attest SBOM with cosign (key-based)
-        if: inputs.signing_mode == 'key'
+      - name: Attest SBOM with cosign
+        id: attest
+        if: steps.generate.outcome == 'success'
+        continue-on-error: ${{ !inputs.is_release }}
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          SIGNING_MODE: ${{ inputs.signing_mode }}
         run: |
           IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
-          cosign attest --yes \
-            --key env://COSIGN_PRIVATE_KEY \
-            --type cyclonedx \
-            --predicate sbom.cyclonedx.json \
-            "${IMAGE_REF}"
-          echo "✅ SBOM attested (key-based) to: ${IMAGE_REF}"
+          if [ "$SIGNING_MODE" = "key" ]; then
+            cosign attest --yes \
+              --key env://COSIGN_PRIVATE_KEY \
+              --tlog-upload=false \
+              --type spdxjson \
+              --predicate sbom.spdx.json \
+              "${IMAGE_REF}"
+          else
+            cosign attest --yes \
+              --type spdxjson \
+              --predicate sbom.spdx.json \
+              "${IMAGE_REF}"
+          fi
+          echo "attested=true" >> "$GITHUB_OUTPUT"
+          echo "✅ SBOM attested (${SIGNING_MODE}) to: ${IMAGE_REF}"
 
-      - name: Attest SBOM with cosign (keyless)
-        if: inputs.signing_mode == 'keyless'
+      - name: Attach SPDX SBOM to the GitHub Release
+        id: upload
+        if: steps.generate.outcome == 'success' && inputs.is_release && inputs.version != ''
+        continue-on-error: ${{ !inputs.is_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
-          cosign attest --yes \
-            --type cyclonedx \
-            --predicate sbom.cyclonedx.json \
-            "${IMAGE_REF}"
-          echo "✅ SBOM attested (keyless) to: ${IMAGE_REF}"
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          IMAGE_SHORT="$(basename "${{ inputs.image_name }}")"
+          ASSET="${IMAGE_SHORT}-${VERSION}.spdx.json"
+          cp sbom.spdx.json "$ASSET"
+          gh release upload "v${VERSION}" "$ASSET" --clobber
+          echo "asset_name=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "✅ Attached $ASSET to release v${VERSION}"

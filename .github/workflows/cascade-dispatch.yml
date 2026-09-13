@@ -1,0 +1,60 @@
+name: Cascade Dispatch (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      downstream_repo:
+        description: 'Target repository as owner/name (e.g. tempest-concorde/fw-os)'
+        required: true
+        type: string
+      event_type:
+        description: 'repository_dispatch event type (e.g. fw-app-released)'
+        required: true
+        type: string
+      client_payload:
+        description: 'JSON object of flat payload fields, e.g. {"version":"1.2.0","digest":"sha256:..."}'
+        required: false
+        type: string
+        default: '{}'
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+
+jobs:
+  dispatch:
+    name: Dispatch ${{ inputs.event_type }} to ${{ inputs.downstream_repo }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse downstream repository
+        id: parse
+        env:
+          DOWNSTREAM_REPO: ${{ inputs.downstream_repo }}
+        run: |
+          set -euo pipefail
+          echo "owner=${DOWNSTREAM_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${DOWNSTREAM_REPO##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.parse.outputs.owner }}
+          repositories: ${{ steps.parse.outputs.name }}
+
+      - name: Dispatch repository_dispatch event
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DOWNSTREAM_REPO: ${{ inputs.downstream_repo }}
+          EVENT_TYPE: ${{ inputs.event_type }}
+          PAYLOAD: ${{ inputs.client_payload }}
+        run: |
+          set -euo pipefail
+          args=(--method POST --field "event_type=${EVENT_TYPE}")
+          while IFS= read -r field; do
+            [ -n "$field" ] || continue
+            args+=(--field "$field")
+          done < <(echo "$PAYLOAD" | jq -r 'to_entries[] | "client_payload[\(.key)]=\(.value)"')
+          gh api "repos/${DOWNSTREAM_REPO}/dispatches" "${args[@]}"
+          echo "✅ Dispatched ${EVENT_TYPE} to ${DOWNSTREAM_REPO}"
