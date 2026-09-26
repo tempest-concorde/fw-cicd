@@ -1,0 +1,19 @@
+name: Repository Self-Audit
+
+# fw-cicd dogfoods its reusable baseline audit on its own repo (fw-gsd
+# specs/004-fedora-version-alignment, T018). The relative `uses:` path pins
+# the callee to the caller's commit, so this workflow also self-tests
+# baseline-audit.yml changes on their own PRs.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  baseline-audit:
+    name: Baseline audit (Fedora 46 baseline)
+    uses: ./.github/workflows/baseline-audit.yml
+    with:
+      baseline: "46"
