@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: read
 
     steps:
       - name: Checkout
@@ -47,6 +48,16 @@ jobs:
           REF=$(echo "$FROM_LINE" | sed 's/^FROM[[:space:]]*//')
           echo "sentinel_reference=$REF" >> "$GITHUB_OUTPUT"
           echo "Sentinel reference: $REF"
+
+      # ghcr packages created under org-private-by-default policy (fw-adsb-*,
+      # 2026-10) are not anonymously resolvable — log in first so digests can
+      # be verified for any visibility class. github.token's token is
+      # packages:read-scoped per the job's permissions block.
+      - name: Log in to GHCR
+        if: contains(steps.sentinel.outputs.sentinel_reference, 'ghcr.io')
+        run: |
+          printf '%s' '${{ github.token }}' | docker login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
 
       - name: Verify sentinel reference resolves
         run: |
