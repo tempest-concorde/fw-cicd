@@ -31,6 +31,10 @@ jobs:
   baseline-audit:
     name: Baseline audit (F${{ inputs.baseline }}+ baseline)
     runs-on: ubuntu-latest
+    # Least privilege: the audit only reads repo content (CodeQL "Workflow
+    # does not contain permissions").
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

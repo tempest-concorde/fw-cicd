@@ -11,6 +11,11 @@ on:
   push:
     branches: [main]
 
+# Least privilege for the GITHUB_TOKEN (CodeQL "Workflow does not contain
+# permissions"): the callee does a checkout-only read of repo content.
+permissions:
+  contents: read
+
 jobs:
   baseline-audit:
     name: Baseline audit (Fedora 46 baseline)
