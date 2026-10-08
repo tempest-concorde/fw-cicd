@@ -21,8 +21,6 @@ on:
         type: string
         default: 'key'
     secrets:
-      GITHUB_TOKEN:
-        required: true
       COSIGN_PRIVATE_KEY:
         required: false
       COSIGN_PASSWORD:
@@ -44,7 +42,7 @@ jobs:
         run: |
           podman login ${{ inputs.registry }} \
             -u ${{ github.actor }} \
-            -p "${{ secrets.GITHUB_TOKEN }}" \
+            -p "${{ github.token }}" \
             --compat-auth-file $HOME/.docker/config.json
 
       - name: Generate SBOM with Syft
