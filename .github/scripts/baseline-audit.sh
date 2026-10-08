@@ -14,8 +14,10 @@
 # A finding is waived when its line carries the marker:
 #   # baseline-audit-ignore
 #
-# Usage: BASELINE=46 ./.github/scripts/baseline-audit.sh [root]
+# Usage: BASELINE=46 [SKIP_DIR=./path] ./.github/scripts/baseline-audit.sh [root]
 #   BASELINE   Fedora baseline release; references below it fail (default: 46)
+#   SKIP_DIR   optional extra directory to prune from the scan (the reusable
+#              workflow uses this for its own tooling checkout at .fw-cicd)
 #   [root]     directory to audit (default: current directory)
 #
 # Invoked by the reusable workflow .github/workflows/baseline-audit.yml; also
@@ -32,6 +34,11 @@ SELF_LEGACY="./.github/workflows/baseline-audit.yml"
 failures=0
 INCLUDES=(--include='Containerfile*' --include='*.yml' --include='*.yaml' --include='*.md')
 EXCLUDES=(--exclude-dir=.git --exclude-dir=node_modules)
+PRUNE=(\( -path ./.git -o -path ./node_modules \))
+if [ -n "${SKIP_DIR:-}" ]; then
+  EXCLUDES+=(--exclude-dir="${SKIP_DIR#./}")
+  PRUNE+=(-o -path "./${SKIP_DIR#./}")
+fi
 
 cd "${ROOT}"
 
@@ -48,7 +55,7 @@ while IFS= read -r f; do
         failures=$((failures+1)) ;;
     esac
   done < <(grep '^FROM ' "${f}" || true)
-done < <(find . \( -path ./.git -o -path ./node_modules \) -prune -o \
+done < <(find . "${PRUNE[@]}" -prune -o \
            -name 'Containerfile*' -print | sort)
 echo "::endgroup::"
 

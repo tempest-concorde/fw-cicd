@@ -31,13 +31,23 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout
+      - name: Checkout caller repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # The audit script lives in fw-cicd, not the caller repo — check out
+      # this tooling repo into .fw-cicd (excluded from the scan via SKIP_DIR).
+      - name: Checkout fw-cicd audit tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: tempest-concorde/fw-cicd
+          ref: main
+          path: .fw-cicd
+
       - name: Bash syntax check on audit script
-        run: bash -n .github/scripts/baseline-audit.sh
+        run: bash -n .fw-cicd/.github/scripts/baseline-audit.sh
 
       - name: Run baseline audit over repo root
         env:
           BASELINE: ${{ inputs.baseline }}
-        run: bash .github/scripts/baseline-audit.sh .
+          SKIP_DIR: .fw-cicd
+        run: bash .fw-cicd/.github/scripts/baseline-audit.sh .
