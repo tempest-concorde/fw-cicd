@@ -1,0 +1,43 @@
+name: Baseline Audit (Reusable)
+
+# Repo-wide constitution guard (fw-gsd specs/004-fedora-version-alignment,
+# T017). The audit logic lives in .github/scripts/baseline-audit.sh so it is
+# readable, locally runnable, and bash-validated (bash -n runs here in CI on
+# every PR that touches either file).
+# A finding is waived when its line carries the marker:
+#   # baseline-audit-ignore
+#
+# Caller shape (fw-gsd specs/004-fedora-version-alignment, T018):
+#   baseline-audit:
+#     uses: tempest-concorde/fw-cicd/.github/workflows/baseline-audit.yml@main
+#     with:
+#       baseline: "46"
+
+on:
+  workflow_call:
+    inputs:
+      baseline:
+        description: 'Fedora baseline release; references below this release fail the audit'
+        required: false
+        type: string
+        default: '46'
+
+jobs:
+  baseline-audit:
+    name: Baseline audit (F${{ inputs.baseline }}+ baseline)
+    runs-on: ubuntu-latest
+    # Least privilege: the audit only reads repo content (CodeQL "Workflow
+    # does not contain permissions").
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Bash syntax check on audit script
+        run: bash -n .github/scripts/baseline-audit.sh
+
+      - name: Run baseline audit over repo root
+        env:
+          BASELINE: ${{ inputs.baseline }}
+        run: bash .github/scripts/baseline-audit.sh .
