@@ -1,0 +1,26 @@
+name: Lint Workflows
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run actionlint
+        # shellcheck integration is disabled (`-shellcheck=`) because the
+        # existing workflows carry pre-existing SC2086/SC2034 findings; enable
+        # it once the backlog is cleared. actionlint's own checks (syntax,
+        # expressions, untrusted input) remain enforced.
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            --workdir /repo \
+            rhysd/actionlint:1.7.7 -shellcheck= -color

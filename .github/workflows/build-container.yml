@@ -31,6 +31,16 @@ on:
         required: false
         type: string
         default: ''
+      version:
+        description: 'Release version (used for the SBOM release asset name)'
+        required: false
+        type: string
+        default: ''
+      is_release:
+        description: 'Whether this is a release build (drives the SBOM failure policy)'
+        required: false
+        type: boolean
+        default: false
     outputs:
       digest:
         description: 'Image digest'
@@ -117,3 +127,17 @@ jobs:
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: 'trivy-results.sarif'
+
+  sbom:
+    name: SBOM attestation
+    needs: build
+    if: inputs.push
+    uses: ./.github/workflows/sbom-attest.yml
+    with:
+      registry: ${{ inputs.registry }}
+      image_name: ${{ inputs.image_name }}
+      image_digest: ${{ needs.build.outputs.digest }}
+      version: ${{ inputs.version }}
+      is_release: ${{ inputs.is_release }}
+      signing_mode: key
+    secrets: inherit

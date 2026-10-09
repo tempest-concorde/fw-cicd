@@ -17,7 +17,10 @@ Located in `.github/workflows/`:
 - **cosign-sign-verify.yml** - Key-based or keyless cosign signing with verification
 - **commitlint.yml** - PR title validation via commitlint
 - **merge-manifest.yml** - Multi-arch manifest creation and cosign signing (key-based or keyless)
-- **sbom-attest.yml** - SBOM generation (CycloneDX) and cosign attestation (key-based or keyless)
+- **sbom-attest.yml** - SBOM generation (SPDX 2.3) with release-asset attachment and cosign attestation (key-based or keyless); fails release builds on error, warns on PR builds
+- **lint-workflows.yml** - `actionlint` validation of workflow YAML
+- **build-web.yml** - React/PatternFly frontend build, lint, and typecheck
+- **digest-sync.yml** - Keeps a downstream sentinel image reference and its quadlet `Image=` lines in sync
 - **semantic-release.yml** - Conventional commits → semantic versioning (global or local config)
 
 ### Composite Actions
@@ -113,6 +116,34 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+## SBOM and Release Cascade
+
+### SBOM (SPDX 2.3)
+
+`sbom-attest.yml` is invoked by `build-container.yml` (fw-app), `build-bootc.yml` (fw-os),
+and `fedora-bootc-pi/publish.yml` after the image digest is known. It generates an **SPDX
+2.3** SBOM with syft, attaches it to the GitHub Release as a downloadable asset, publishes a
+**cosign attestation** (`--type spdxjson`), **fails release builds** on error, and **warns**
+on pull-request builds. Full contract: `contracts/sbom-attest-workflow.md` in `fw-gsd`.
+
+### Release cascade
+
+A published upstream image opens a reviewable update PR downstream:
+
+| Upstream | Event type | Downstream | Consumer |
+|----------|------------|------------|----------|
+| `fw-app` | `fw-app-released` | `fw-os` | `fw-os/.github/workflows/update-fw-app-ref.yml` |
+| `fedora-bootc-pi` | `base-image-updated` | `fw-os` | existing dispatch in `publish.yml` |
+
+The cascade is prompt (`repository_dispatch`), idempotent (stable `cascade/fw-app-<version>`
+branch; skips when already current), and traceable (the PR links to the triggering run). PRs
+are always human-merged. Full contract: `contracts/cascade-dispatch.md` in `fw-gsd`.
+
+### Workflow linting
+
+`lint-workflows.yml` runs `actionlint` on every push/PR (shellcheck integration is disabled
+pending cleanup of pre-existing SC2086/SC2034 findings).
+
 ## SLSA Level 2-3 Compliance
 
 These workflows implement the following SLSA (Supply-chain Levels for Software Artifacts) requirements:
@@ -122,7 +153,7 @@ These workflows implement the following SLSA (Supply-chain Levels for Software A
 | Source provenance | GitHub OIDC identity, SHA-pinned actions |
 | Build provenance | SLSA GitHub Generator attestation |
 | Signing | cosign with GitHub OIDC (keyless) |
-| SBOM | syft/anchore CycloneDX generation + attestation |
+| SBOM | syft/anchore SPDX 2.3 generation, release asset + attestation |
 | Vulnerability scanning | Trivy (fail on CRITICAL/HIGH) |
 | Hermetic builds | Isolated GitHub-hosted runners |
 | Reproducibility | Base image pinned by digest |
