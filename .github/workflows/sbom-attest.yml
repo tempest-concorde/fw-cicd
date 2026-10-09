@@ -101,15 +101,21 @@ jobs:
           SIGNING_MODE: ${{ inputs.signing_mode }}
         run: |
           IMAGE_REF="${{ inputs.registry }}/${{ inputs.image_name }}@${{ inputs.image_digest }}"
+          # cosign v3 dropped --tlog-upload: replicate "no transparency log"
+          # via an explicit signing config without rekor (per cosign's own
+          # deprecation hint). Source doc lives in sigstore/root-signing.
+          curl -fsSL https://raw.githubusercontent.com/sigstore/root-signing/refs/heads/main/targets/signing_config.v0.2.json \
+            | jq 'del(.rekorTlogUrls)' > /tmp/signing-config.json
           if [ "$SIGNING_MODE" = "key" ]; then
             cosign attest --yes \
               --key env://COSIGN_PRIVATE_KEY \
-              --tlog-upload=false \
+              --signing-config /tmp/signing-config.json \
               --type spdxjson \
               --predicate sbom.spdx.json \
               "${IMAGE_REF}"
           else
             cosign attest --yes \
+              --signing-config /tmp/signing-config.json \
               --type spdxjson \
               --predicate sbom.spdx.json \
               "${IMAGE_REF}"
