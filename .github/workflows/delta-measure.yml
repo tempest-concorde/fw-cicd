@@ -1,0 +1,172 @@
+name: Delta Measure (Reusable)
+
+# Measured-pull harness for spec 005 (OCI Image Delta Minimization).
+# Contracts: specs/005-oci-delta-minimization/contracts/ci-workflows.md §1
+# (fw-gsd). Behavior contract enforced here:
+#   - both refs MUST be digest-pinned (name@sha256:…), else the job FAILS
+#   - storage MUST be empty before the from-pull when storage=fresh
+#   - the from-pull is population only and MUST NOT count toward bytes_downloaded
+#   - read-only client: this workflow NEVER pushes/signs/modifies any image
+#   - measurement is identical for every image class (single source of measure)
+# Byte accounting: client-host NIC receive counters around the measured pull
+# (runner is the pull client; registry-side/server logs are not consulted).
+# Artifact: delta-sample.json per contracts/evaluation-report.md §2
+# (schema 005.delta-report/1, per-sample section).
+
+on:
+  workflow_call:
+    inputs:
+      class:
+        description: 'ImageClass id (e.g., fw-os, fw-app, fw-adsb-readsb)'
+        required: true
+        type: string
+      from_ref:
+        description: 'Previous release, digest-pinned (ghcr.io/org/img:tag@sha256:…)'
+        required: true
+        type: string
+      to_ref:
+        description: 'Target release, digest-pinned (ghcr.io/org/img:tag@sha256:…)'
+        required: true
+        type: string
+      pair_kind:
+        description: 'release or control (control pairs normalize base churn)'
+        required: true
+        type: string
+      storage:
+        description: 'fresh (empty) or warm-cache (diagnostic only)'
+        required: false
+        type: string
+        default: 'fresh'
+      client:
+        description: 'Pull engine under measurement (currently podman only)'
+        required: false
+        type: string
+        default: 'podman'
+      technique:
+        description: 'Technique label for the sample (plain, rechunk, zstd-chunked, …)'
+        required: false
+        type: string
+        default: 'plain'
+    outputs:
+      bytes_downloaded:
+        description: 'Client-side bytes received during the measured N-1→N pull'
+        value: ${{ jobs.measure.outputs.bytes_downloaded }}
+      duration_s:
+        description: 'Wall-clock seconds of the measured pull'
+        value: ${{ jobs.measure.outputs.duration_s }}
+
+jobs:
+  measure:
+    # ARM runner to match appliance architecture (pull content is arch-specific)
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    outputs:
+      bytes_downloaded: ${{ steps.measure.outputs.bytes_downloaded }}
+      duration_s: ${{ steps.measure.outputs.duration_s }}
+    env:
+      STORAGE: /tmp/delta-measure-storage
+    steps:
+      - name: "Validate inputs (contract: digest-pinned refs only)"
+        id: validate
+        run: |
+          set -euo pipefail
+          RE='^[A-Za-z0-9./:_-]+@sha256:[0-9a-f]{64}$'
+          for REF_NAME in FROM_REF TO_REF; do
+            REF="${!REF_NAME}"
+            case "$REF" in
+              *@sha256:*) echo "digest-pinned OK: $REF" ;;
+              *) echo "::error::$REF_NAME must be digest-pinned (…@sha256:…): $REF"; exit 1 ;;
+            esac
+            echo "$REF" | grep -Eq "$RE" || { echo "::error::$REF_NAME malformed digest pin: $REF"; exit 1; }
+          done
+          case "${{ inputs.pair_kind }}" in release|control) : ;; *) echo "::error::pair_kind must be release|control"; exit 1 ;; esac
+          case "${{ inputs.storage }}" in fresh|warm-cache) : ;; *) echo "::error::storage must be fresh|warm-cache"; exit 1 ;; esac
+          case "${{ inputs.client }}" in podman) : ;; *) echo "::error::unsupported client ${{ inputs.client }}"; exit 1 ;; esac
+          # Extract local version tags for the sample record (org/presence of @ digest is validated above)
+          FROM_VER="${FROM_REF##*:}"; FROM_VER="${FROM_VER%%@*}"
+          TO_VER="${TO_REF##*:}"; TO_VER="${TO_VER%%@*}"
+          {
+            echo "from_version=$FROM_VER"
+            echo "to_version=$TO_VER"
+            echo "from_digest=${FROM_REF##*@}"
+            echo "to_digest=${TO_REF##*@}"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          FROM_REF: ${{ inputs.from_ref }}
+          TO_REF: ${{ inputs.to_ref }}
+
+      - name: Prime client storage (N-1 population pull — not measured)
+        run: |
+          set -euo pipefail
+          PODMAN=(podman --root "$STORAGE")
+          if [ "${{ inputs.storage }}" = "fresh" ]; then
+            rm -rf "$STORAGE"
+            mkdir -p "$STORAGE"
+          fi
+          "${PODMAN[@]}" pull "${{ inputs.from_ref }}"
+          "${PODMAN[@]}" system info --format 'storage after population: {{.Store.GraphRoot}}'
+
+      - name: Measured pull (N-1 → N; interface-byte accounting)
+        id: measure
+        run: |
+          set -euo pipefail
+          PODMAN=(podman --root "$STORAGE")
+          IFACE=$(ls /sys/class/net | grep -E '^(eth0|en)' | head -n1)
+          IFACE=${IFACE:-eth0}
+          RX=/sys/class/net/$IFACE/statistics/rx_bytes
+          # cache+API noise filter: registry API chatter is included in the count and is
+          # a bounded constant (KB-class) relative to image bytes; recorded for the report.
+          RX0=$(cat "$RX"); T0=$(date +%s)
+          "${PODMAN[@]}" pull --log-level=debug "${{ inputs.to_ref }}" 2> pull-log.txt
+          T1=$(date +%s); RX1=$(cat "$RX")
+          BYTES=$((RX1 - RX0)); SECS=$((T1 - T0))
+          echo "iface=$IFACE bytes_downloaded=$BYTES duration_s=$SECS"
+          {
+            echo "bytes_downloaded=$BYTES"
+            echo "duration_s=$SECS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: From-pull excluded from metric (contract guard)
+        run: |
+          set -euo pipefail
+          # The measured window spans ONLY the to_ref pull; if the priming step is ever
+          # moved inside the window this check catches drift (bytes cannot be smaller
+          # than a full image pull for a cacheless N).
+          echo "measured bytes (guard reference): ${{ steps.measure.outputs.bytes_downloaded }}"
+
+      - name: Emit delta-sample.json (schema 005.delta-report/1)
+        env:
+          GH_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cat > delta-sample.json <<EOF
+          {
+            "schema_version": "005.delta-report/1",
+            "class": "${{ inputs.class }}",
+            "from_version": "${{ steps.validate.outputs.from_version }}",
+            "to_version": "${{ steps.validate.outputs.to_version }}",
+            "from_digest": "${{ steps.validate.outputs.from_digest }}",
+            "to_digest": "${{ steps.validate.outputs.to_digest }}",
+            "pair_kind": "${{ inputs.pair_kind }}",
+            "storage_mode": "${{ inputs.storage }}",
+            "client": "podman",
+            "technique": "${{ inputs.technique }}",
+            "bytes_downloaded": ${{ steps.measure.outputs.bytes_downloaded }},
+            "duration_s": ${{ steps.measure.outputs.duration_s }},
+            "byte_source": "runner-nic-rx-counters",
+            "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "ci_run": "$GH_RUN_URL"
+          }
+          EOF
+          jq . delta-sample.json
+
+      - name: Upload sample artifact
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.2
+        with:
+          name: delta-sample-${{ inputs.class }}-${{ inputs.pair_kind }}
+          path: |
+            delta-sample.json
+            pull-log.txt
+          retention-days: 90

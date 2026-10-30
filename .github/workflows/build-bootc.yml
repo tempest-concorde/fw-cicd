@@ -26,6 +26,16 @@ on:
         required: false
         type: boolean
         default: false
+      compression_format:
+        description: 'OCI compression format applied at push (e.g., zstd:chunked). Empty = lane default (plain). Spec 005 build flag.'
+        required: false
+        type: string
+        default: ''
+      rechunk:
+        description: 'Run bootc-base-imagectl rechunk on the built image before push (spec 005 build flag, default off).'
+        required: false
+        type: boolean
+        default: false
       tags:
         description: 'Space-separated image tags'
         required: false
@@ -114,6 +124,24 @@ jobs:
           buildah rm $CONTAINER
           echo "All smoke tests passed"
 
+      - name: Rechunk image (spec 005, opt-in)
+        if: inputs.rechunk
+        id: rechunk
+        run: |
+          set -euo pipefail
+          T0=$(date +%s)
+          FIRST_TAG=$(echo "${{ steps.tags.outputs.tags }}" | awk '{print $1}')
+          IMAGE_REF="${{ inputs.image_name }}:${FIRST_TAG}"
+          # TODO(PIN-1): must be digest-pinned (quay.io is unreachable from the
+          # authoring environment); tracked as pipeline pin-debt PIN-1 in
+          # fw-gsd specs/005-oci-delta-minimization evaluation-report.md
+          podman run --rm --privileged \
+            -v /var/lib/containers:/var/lib/containers \
+            quay.io/centos-bootc/bootc-base-imagectl:stream10 \
+            rechunk "containers-storage:${IMAGE_REF}"
+          T1=$(date +%s)
+          echo "rechunk_seconds=$(( T1 - T0 ))" >> "$GITHUB_OUTPUT"
+
       - name: Log in to registry
         if: inputs.push
         uses: redhat-actions/podman-login@50c2d9a331bb67c8fdab99b86455fad05e2e3252  # v1.9
@@ -123,13 +151,23 @@ jobs:
           registry: ${{ inputs.registry }}
           auth_file_path: /run/containers/0/auth.json
 
-      - name: Push to registry
-        if: inputs.push
+      - name: Push to registry (plain)
+        if: inputs.push && inputs.compression_format == ''
         uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37  # v3.0.0
         with:
           image: ${{ inputs.image_name }}
           tags: ${{ steps.tags.outputs.tags }}
           registry: ${{ inputs.registry }}
+
+      - name: Push to registry (optimized compression, spec 005)
+        if: inputs.push && inputs.compression_format != ''
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37  # v3.0.0
+        with:
+          image: ${{ inputs.image_name }}
+          tags: ${{ steps.tags.outputs.tags }}
+          registry: ${{ inputs.registry }}
+          extra-args: |
+            --compression-format=${{ inputs.compression_format }}
 
       - name: Get digest
         if: inputs.push
@@ -141,6 +179,34 @@ jobs:
                    skopeo inspect docker://${{ inputs.registry }}/${{ inputs.image_name }}:${FIRST_TAG} | jq -r '.Digest')
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
           echo "Image digest: $DIGEST"
+
+      - name: Record optimized-build telemetry (spec 005, feeds pipeline_cost_min/storage_cost)
+        if: inputs.push && ((inputs.rechunk) || (inputs.compression_format != ''))
+        run: |
+          set -euo pipefail
+          # Registry-side storage for this push = sum of compressed layer blob sizes.
+          REPO=${{ inputs.registry }}/${{ inputs.image_name }}
+          STORAGE_BYTES=$(skopeo inspect --raw "docker://${REPO}@${{ steps.digest.outputs.digest }}" | jq '[.layers[].size] | add // 0')
+          cat > optimized-cost.json <<EOF
+          {
+            "schema_version": "005.optimized-cost/1",
+            "image": "${{ inputs.image_name }}",
+            "digest": "${{ steps.digest.outputs.digest }}",
+            "rechunk": ${{ inputs.rechunk }},
+            "compression_format": "${{ inputs.compression_format }}",
+            "rechunk_seconds": ${{ steps.rechunk.outputs.rechunk_seconds || 0 }},
+            "storage_bytes": ${STORAGE_BYTES},
+            "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat optimized-cost.json
+
+      - name: Upload optimized-build telemetry
+        if: inputs.push && ((inputs.rechunk) || (inputs.compression_format != ''))
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.2
+        with:
+          name: optimized-cost-${{ inputs.image_name }}
+          path: optimized-cost.json
 
   sbom:
     name: SBOM attestation

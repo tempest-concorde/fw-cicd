@@ -26,6 +26,11 @@ on:
         required: false
         type: boolean
         default: true
+      compression_format:
+        description: 'OCI compression format applied at push (e.g., zstd:chunked). Empty = lane default (plain). Spec 005 build flag.'
+        required: false
+        type: string
+        default: ''
       tags:
         description: 'Space-separated image tags'
         required: false
@@ -94,13 +99,23 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
           registry: ${{ inputs.registry }}
 
-      - name: Push to registry
-        if: inputs.push
+      - name: Push to registry (plain)
+        if: inputs.push && inputs.compression_format == ''
         uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37  # v3.0.0
         with:
           image: ${{ inputs.image_name }}
           tags: ${{ steps.tags.outputs.tags }}
           registry: ${{ inputs.registry }}
+
+      - name: Push to registry (optimized compression, spec 005)
+        if: inputs.push && inputs.compression_format != ''
+        uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37  # v3.0.0
+        with:
+          image: ${{ inputs.image_name }}
+          tags: ${{ steps.tags.outputs.tags }}
+          registry: ${{ inputs.registry }}
+          extra-args: |
+            --compression-format=${{ inputs.compression_format }}
 
       - name: Get digest
         if: inputs.push
@@ -112,6 +127,34 @@ jobs:
                    skopeo inspect docker://${{ inputs.registry }}/${{ inputs.image_name }}:${FIRST_TAG} | jq -r '.Digest')
           echo "digest=$DIGEST" >> $GITHUB_OUTPUT
           echo "Image digest: $DIGEST"
+
+      - name: Record optimized-build telemetry (spec 005, feeds pipeline_cost_min/storage_cost)
+        if: inputs.push && inputs.compression_format != ''
+        run: |
+          set -euo pipefail
+          # Registry-side storage for this push = sum of compressed layer blob sizes.
+          REPO=${{ inputs.registry }}/${{ inputs.image_name }}
+          STORAGE_BYTES=$(skopeo inspect --raw "docker://${REPO}@${{ steps.digest.outputs.digest }}" | jq '[.layers[].size] | add // 0')
+          cat > optimized-cost.json <<EOF
+          {
+            "schema_version": "005.optimized-cost/1",
+            "image": "${{ inputs.image_name }}",
+            "digest": "${{ steps.digest.outputs.digest }}",
+            "rechunk": false,
+            "compression_format": "${{ inputs.compression_format }}",
+            "rechunk_seconds": 0,
+            "storage_bytes": ${STORAGE_BYTES},
+            "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat optimized-cost.json
+
+      - name: Upload optimized-build telemetry
+        if: inputs.push && inputs.compression_format != ''
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.2
+        with:
+          name: optimized-cost-${{ inputs.image_name }}
+          path: optimized-cost.json
 
       - name: Run Trivy vulnerability scanner
         if: inputs.push
