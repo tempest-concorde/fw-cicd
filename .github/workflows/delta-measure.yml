@@ -38,7 +38,7 @@ on:
         type: string
         default: 'fresh'
       client:
-        description: 'Pull engine under measurement (currently podman only)'
+        description: 'Pull engine under measurement (podman, or bootc-class — bootc-class uses the identical podman observation path per contract)'
         required: false
         type: string
         default: 'podman'
@@ -82,7 +82,7 @@ jobs:
           done
           case "${{ inputs.pair_kind }}" in release|control) : ;; *) echo "::error::pair_kind must be release|control"; exit 1 ;; esac
           case "${{ inputs.storage }}" in fresh|warm-cache) : ;; *) echo "::error::storage must be fresh|warm-cache"; exit 1 ;; esac
-          case "${{ inputs.client }}" in podman) : ;; *) echo "::error::unsupported client ${{ inputs.client }}"; exit 1 ;; esac
+          case "${{ inputs.client }}" in podman|bootc-class) : ;; *) echo "::error::unsupported client ${{ inputs.client }}"; exit 1 ;; esac
           # Extract local version tags for the sample record (org/presence of @ digest is validated above)
           FROM_VER="${FROM_REF##*:}"; FROM_VER="${FROM_VER%%@*}"
           TO_VER="${TO_REF##*:}"; TO_VER="${TO_VER%%@*}"
@@ -109,37 +109,39 @@ jobs:
 
       - name: Measured pull (N-1 → N; interface-byte accounting)
         id: measure
+        # Contract guard: the priming step above is a SEPARATE step, so the
+        # RX0..RX1 window below structurally cannot include the from-pull —
+        # keep that ordering if this workflow is edited.
         run: |
           set -euo pipefail
           PODMAN=(podman --root "$STORAGE")
           IFACE=$(ls /sys/class/net | grep -E '^(eth0|en)' | head -n1)
           IFACE=${IFACE:-eth0}
           RX=/sys/class/net/$IFACE/statistics/rx_bytes
+          # client version is recorded in the sample (data-model client: podman-<version>)
+          PODVER=$(podman version --format '{{.Client.Version}}' 2>/dev/null | head -n1 || true)
+          PODVER=${PODVER:-$(podman --version | awk '{print $NF}')}
           # cache+API noise filter: registry API chatter is included in the count and is
           # a bounded constant (KB-class) relative to image bytes; recorded for the report.
           RX0=$(cat "$RX"); T0=$(date +%s)
           "${PODMAN[@]}" pull --log-level=debug "${{ inputs.to_ref }}" 2> pull-log.txt
           T1=$(date +%s); RX1=$(cat "$RX")
           BYTES=$((RX1 - RX0)); SECS=$((T1 - T0))
-          echo "iface=$IFACE bytes_downloaded=$BYTES duration_s=$SECS"
+          echo "iface=$IFACE bytes_downloaded=$BYTES duration_s=$SECS podman=$PODVER"
           {
             echo "bytes_downloaded=$BYTES"
             echo "duration_s=$SECS"
+            echo "podman_version=$PODVER"
           } >> "$GITHUB_OUTPUT"
-
-      - name: From-pull excluded from metric (contract guard)
-        run: |
-          set -euo pipefail
-          # The measured window spans ONLY the to_ref pull; if the priming step is ever
-          # moved inside the window this check catches drift (bytes cannot be smaller
-          # than a full image pull for a cacheless N).
-          echo "measured bytes (guard reference): ${{ steps.measure.outputs.bytes_downloaded }}"
 
       - name: Emit delta-sample.json (schema 005.delta-report/1)
         env:
           GH_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PODVER: ${{ steps.measure.outputs.podman_version }}
         run: |
           set -euo pipefail
+          CLIENT_LABEL="${{ inputs.client }}"
+          if [ "$CLIENT_LABEL" = "podman" ]; then CLIENT_LABEL="podman-${PODVER:-unknown}"; fi
           cat > delta-sample.json <<EOF
           {
             "schema_version": "005.delta-report/1",
@@ -150,10 +152,12 @@ jobs:
             "to_digest": "${{ steps.validate.outputs.to_digest }}",
             "pair_kind": "${{ inputs.pair_kind }}",
             "storage_mode": "${{ inputs.storage }}",
-            "client": "podman",
+            "client": "${CLIENT_LABEL}",
+            "podman_version": "${PODVER:-unknown}",
             "technique": "${{ inputs.technique }}",
             "bytes_downloaded": ${{ steps.measure.outputs.bytes_downloaded }},
             "duration_s": ${{ steps.measure.outputs.duration_s }},
+            "pipeline_cost_min": 0,
             "byte_source": "runner-nic-rx-counters",
             "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "ci_run": "$GH_RUN_URL"
@@ -165,7 +169,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.2
         with:
-          name: delta-sample-${{ inputs.class }}-${{ inputs.pair_kind }}
+          # artifact names must be unique per pair within a dispatch batch (v4
+          # artifacts are immutable per name) — pair versions disambiguate
+          name: delta-sample-${{ inputs.class }}-${{ steps.validate.outputs.from_version }}-${{ steps.validate.outputs.to_version }}-${{ inputs.pair_kind }}
           path: |
             delta-sample.json
             pull-log.txt

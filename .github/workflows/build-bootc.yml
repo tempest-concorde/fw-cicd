@@ -151,8 +151,13 @@ jobs:
           registry: ${{ inputs.registry }}
           auth_file_path: /run/containers/0/auth.json
 
+      - name: Timer start (spec 005 optimized push)
+        if: inputs.push && inputs.compression_format != ''
+        run: echo "OPT_PUSH_T0=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Push to registry (plain)
         if: inputs.push && inputs.compression_format == ''
+        id: push_plain
         uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37  # v3.0.0
         with:
           image: ${{ inputs.image_name }}
@@ -161,6 +166,7 @@ jobs:
 
       - name: Push to registry (optimized compression, spec 005)
         if: inputs.push && inputs.compression_format != ''
+        id: push_opt
         uses: redhat-actions/push-to-registry@94ade333c38ecc0e60e94785125d9a52ca423b37  # v3.0.0
         with:
           image: ${{ inputs.image_name }}
@@ -173,12 +179,24 @@ jobs:
         if: inputs.push
         id: digest
         run: |
-          # Use the first tag to get the digest
+          set -euo pipefail
           FIRST_TAG=$(echo "${{ steps.tags.outputs.tags }}" | awk '{print $1}')
-          DIGEST=$(podman image inspect --format '{{ .Digest }}' ${{ inputs.registry }}/${{ inputs.image_name }}:${FIRST_TAG} 2>/dev/null || \
-                   skopeo inspect docker://${{ inputs.registry }}/${{ inputs.image_name }}:${FIRST_TAG} | jq -r '.Digest')
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          # Prefer the push action's own digest output — it is the digest the
+          # registry accepted (spec 005 T046: for chunked manifests the pushed
+          # digest can differ from any local image record).
+          DIGEST="${{ steps.push_plain.outputs.digest }}${{ steps.push_opt.outputs.digest }}"
+          if [ -z "$DIGEST" ]; then
+            DIGEST=$(skopeo inspect "docker://${{ inputs.registry }}/${{ inputs.image_name }}:${FIRST_TAG}" | jq -r '.Digest')
+          fi
+          : "${DIGEST:?could not resolve the pushed digest}"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "Image digest: $DIGEST"
+
+      - name: Timer stop (spec 005 optimized push)
+        if: inputs.push && inputs.compression_format != ''
+        run: |
+          echo "OPT_PUSH_T1=$(date +%s)" >> "$GITHUB_ENV"
+          echo "optimized push wall time: $(( $(date +%s) - ${OPT_PUSH_T0:-$(date +%s)} ))s"
 
       - name: Record optimized-build telemetry (spec 005, feeds pipeline_cost_min/storage_cost)
         if: inputs.push && ((inputs.rechunk) || (inputs.compression_format != ''))
@@ -187,6 +205,7 @@ jobs:
           # Registry-side storage for this push = sum of compressed layer blob sizes.
           REPO=${{ inputs.registry }}/${{ inputs.image_name }}
           STORAGE_BYTES=$(skopeo inspect --raw "docker://${REPO}@${{ steps.digest.outputs.digest }}" | jq '[.layers[].size] | add // 0')
+          OPT_PUSH_SECONDS=$(( ${OPT_PUSH_T1:-0} - ${OPT_PUSH_T0:-0} ))
           cat > optimized-cost.json <<EOF
           {
             "schema_version": "005.optimized-cost/1",
@@ -195,6 +214,7 @@ jobs:
             "rechunk": ${{ inputs.rechunk }},
             "compression_format": "${{ inputs.compression_format }}",
             "rechunk_seconds": ${{ steps.rechunk.outputs.rechunk_seconds || 0 }},
+            "optimized_push_seconds": ${OPT_PUSH_SECONDS},
             "storage_bytes": ${STORAGE_BYTES},
             "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
