@@ -1,0 +1,83 @@
+name: Delta Measure Dispatch
+
+# workflow_dispatch caller for the reusable harness (T040, fw-gsd spec 005).
+# delta-measure.yml is workflow_call-only; this dispatcher is the CI entry
+# point. It accepts a JSON array of release/control pairs and fans out one
+# measured-pull job per pair (one GitHub Checks entry each, artifacts
+# disambiguated by class+versions+pair_kind).
+#
+# Example pairs_json:
+#   [
+#     {"class":"fw-os",
+#      "from_ref":"ghcr.io/org/fw-os:2.3.7@sha256:…",
+#      "to_ref":"ghcr.io/org/fw-os:2.3.8@sha256:…"},
+#     {"class":"fw-os","pair_kind":"control", …}
+#   ]
+# Optional per pair: pair_kind (release|control), storage (fresh|warm-cache),
+# client (podman|bootc-class), technique (label, default plain).
+
+on:
+  workflow_dispatch:
+    inputs:
+      pairs_json:
+        description: 'JSON array of pairs: [{"class","from_ref","to_ref","pair_kind","storage","client","technique"}, …] — refs MUST be digest-pinned (…@sha256:…)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Parse and validate pair list
+    runs-on: ubuntu-latest
+    outputs:
+      pairs: ${{ steps.parse.outputs.pairs }}
+    steps:
+      - name: Parse pairs_json into a dispatch matrix
+        id: parse
+        env:
+          PAIRS_JSON: ${{ inputs.pairs_json }}
+        run: |
+          set -euo pipefail
+          echo "$PAIRS_JSON" | jq -e 'type == "array" and length > 0' >/dev/null \
+            || { echo "::error::pairs_json must be a non-empty JSON array"; exit 1; }
+          NORM=$(echo "$PAIRS_JSON" | jq -c '[.[] |
+            (if ((.class|type) != "string") or ((.from_ref|type) != "string") or ((.to_ref|type) != "string")
+             then error("each pair needs string class/from_ref/to_ref") else . end) | {
+            class: .class,
+            from_ref: .from_ref,
+            to_ref: .to_ref,
+            pair_kind: (.pair_kind // "release"),
+            storage: (.storage // "fresh"),
+            client: (.client // "podman"),
+            technique: (.technique // "plain")
+          }]')
+          # Fail fast (the reusable workflow re-validates each ref as well)
+          echo "$NORM" | jq -r '.[] | .from_ref, .to_ref' | while read -r REF; do
+            case "$REF" in
+              *@sha256:*) : ;;
+              *) echo "::error::ref not digest-pinned: $REF"; exit 1 ;;
+            esac
+          done
+          COUNT=$(echo "$NORM" | jq 'length')
+          echo "normalized pairs ($COUNT):"
+          echo "$NORM" | jq .
+          echo "pairs=$(echo "$NORM" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+  measure:
+    name: "Measure ${{ matrix.pair.class }} (${{ matrix.pair.from_ref }} → ${{ matrix.pair.to_ref }})"
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        pair: ${{ fromJSON(needs.prepare.outputs.pairs) }}
+    uses: ./.github/workflows/delta-measure.yml
+    with:
+      class: ${{ matrix.pair.class }}
+      from_ref: ${{ matrix.pair.from_ref }}
+      to_ref: ${{ matrix.pair.to_ref }}
+      pair_kind: ${{ matrix.pair.pair_kind }}
+      storage: ${{ matrix.pair.storage }}
+      client: ${{ matrix.pair.client }}
+      technique: ${{ matrix.pair.technique }}
